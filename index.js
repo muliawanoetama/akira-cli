@@ -112,7 +112,6 @@ try {
     console.log('files', files);
     console.log('filesCreateOnly', filesCreateOnly);
     throw new Error('exit');
-    // git remote add origin https://github.com/muliawanoetama/akira-cli.git
 
     // get options
     const options = process.execArgv?.reduce((xAcc, x) => {
