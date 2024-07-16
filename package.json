@@ -1,0 +1,14 @@
+{
+    "name": "akira-cli",
+    "version": "0.8.0",
+    "description": "CLI for framework Akira",
+    "type": "module",
+    "bin": {
+        "akira-cli": "./index.js"
+    },
+    "dependencies": {
+        "@inquirer/prompts": "^3.3.0",
+        "semver": "^7.5.4",
+        "zx": "^7.2.3"
+    }
+}
