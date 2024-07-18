@@ -1,6 +1,7 @@
-#!/usr/bin/env node
+#!/usr/bin/env zx
 import 'dotenv/config';
 import 'zx/globals';
+import { kebabCase } from 'lodash';
 import * as semver from 'semver';
 import { select, input, confirm } from '@inquirer/prompts';
 $.verbose = false;
@@ -42,6 +43,70 @@ $.verbose = false;
 // "generate-db": "drizzle-kit generate",
 // "migrate-db": "drizzle-kit migrate"
 // }
+
+function changeConfig(fileConfigPath, configKey, configValue) {
+    let fileContent = fs.readFileSync(fileConfigPath, 'utf8');
+    const config = configKey + ' = ' + configValue;
+
+    const regex = new RegExp(`^${configKey}.*$`, 'm');
+    if (regex.test(fileContent)) {
+        fileContent = fileContent?.replace(regex, config);
+    }
+    else {
+        fileContent += `\n${config}\n`;
+    }
+
+    fs.writeFileSync(fileConfigPath, fileContent);
+}
+
+// optionsConfig = [{ key, optionsValue, defaultValue, questionMessage, errorMessageWhenUndefined }, ...]
+async function getOptionsValue (optionsConfig) {
+    let r = {};
+    for (let i in optionsConfig) {
+        const x = optionsConfig[i];
+        const key = x?.key;
+        const keyArgument = kebabCase(key);
+        if (argv?.[keyArgument]) {
+            r = {
+                ...r,
+                [key]: argv?.[keyArgument]
+            };
+        }
+        else {
+            // ask question
+            let answer;
+            if (x?.optionsValue?.length>0) {
+                answer = await select({
+                    message: x?.questionMessage,
+                    choices: x?.optionsValue?.map(y => ({
+                        value: y?.value,
+                        name: y?.label,
+                    })),
+                });
+            }
+            else {
+                answer = await input({
+                    message: x?.questionMessage,
+                });
+            }
+            if (answer===undefined) {
+                if (defaultValue===undefined) {
+                    throw Error(x?.errorMessageWhenUndefined);
+                }
+                else {
+                    answer = defaultValue;
+                }
+            }
+            r = {
+                ...r,
+                [key]: answer ?? null,
+            }
+        }
+    }
+    return r;
+}
+
+console.log('argv', argv);
 
 const siteUrl = process?.env?.SITE_URL;
 const sourceRepository = 'akira';
@@ -142,9 +207,9 @@ try {
     })?.flat();
 
     // get 'action' argument
-    const [action, testA, testB] = process.argv.slice(2);
-    if (!action) {
-        throw new Error('Please add action for this cli (install / update / commit-dna / test / server-install / server-config), example: "npx akira-cli update"');
+    const [action, testA, testB] = argv._;
+    if (!['test', 'install', 'update', 'commit-dna', 'server-install', 'server-config'].includes(action)) {
+        throw new Error('Please add valid action (install / update / commit-dna / test / server-install / server-config), example: "npx akira-cli update"');
     }
 
     // console.log('files', files);
@@ -186,7 +251,15 @@ try {
         }
     }, {});
 
-    // check requirement
+    // make sure run as sudo
+    if (action == 'server-install' || action == 'server-config') {
+        // Check if the script is run as root
+        if (os.userInfo().uid !== 0) {
+            throw new Error('You must run this as sudo');
+        }
+    }
+
+    // check os requirement
     if (action == 'install') {
         // at this state, server must be installed all requirement
         // check node and npm version
@@ -275,6 +348,29 @@ try {
             throw new Error('You must add first line prefix "// modified" to each file that you change manually.');
         }
     }
+    else if (action == 'commit-dna') {
+        options.siteUrl = '';
+    }
+    else if (action == 'server-install') {
+        options.homePath = '';
+        options.projectName = '';
+        options.databaseHost = 'localhost';
+        options.databasePort = '5432';
+        options.databaseRootPassword = 'rpassword';
+        options.databaseUsername = 'username';
+        options.databasePassword = 'password';
+        options.databaseRootUrl = 'postgres://postgres:@' + options?.databaseHost + ':' + options?.databasePort + '/postgres';
+        options.databaseUrl = 'postgres://' + options?.databaseUsername + ':' + options?.databasePassword + '@' + options?.databaseHost + ':' + options?.databasePort + '/' + options?.projectName;
+    }
+    else if (action == 'server-config') {
+        options.homePath = '/home/muliawan' ?? '/home/user';
+        options.siteName = 'test';
+        options.siteDomain = 'test.muliawanoetama.com';
+        options.port = 3000;
+        options.developmentSiteName = options?.siteName + '-dev';
+        options.developmentSiteDomain = options?.siteDomain?.split('.')?.map((x, xIndex) => xIndex === 0 ? x + '-dev' : x)?.join('.');
+        options.developmentPort = 53000 ?? 50000 + options?.port;
+    }
 
     // copy muliawanoetama/akira.git to temporary folder ./.akira/
     if (action == 'install' || action == 'update') {
@@ -285,7 +381,7 @@ try {
 
     // main
     if (action == 'test') {
-        console.log('Test: ' + testA + ' x ' + testB + ' = ', (testA ?? 0) + (testB ?? 0));
+        console.log('Test: ' + (testA ?? 0) + ' + ' + (testB ?? 0) + ' = ' + ((testA ?? 0) + (testB ?? 0)));
     }
     else if (action == 'install') {
         // copy files
@@ -424,43 +520,43 @@ PUBLICAPI_IMAGEKIT=`);
         await $`npm run build-favicon`;
 
         // run api /tool/create-drizzle:
-        await $`curl -X POST '${siteUrl}/api/tool/create-drizzle'`;
+        await $`curl -X POST '${options?.siteUrl}/api/tool/create-drizzle'`;
 
         // commit database
         await $`npm run generate-db`;
         await $`npm run migrate-db`;
     }
     else if (action == 'server-install') {
-        const homePath = '/home/muliawan';
-
         // requirement Ubuntu 20.04
 
+        // install pre
+        await $`sudo apt -y install nano curl wget ca-certificates fail2ban`;
+
         // create folder data
-        await $`mkdir ${homePath}/data`;
+        await $`mkdir ${options?.homePath}/data`;
 
         // create folder config
-        await $`mkdir ${homePath}/config`;
-        await $`sudo ln -s /etc/nginx/conf.d/ ${homePath}/config/nginx-virtualhost`;
-        await $`mkdir ${homePath}/config/node`;
+        await $`mkdir ${options?.homePath}/config`;
+        await $`sudo ln -s /etc/nginx/conf.d/ ${options?.homePath}/config/nginx-virtualhost`;
+        await $`mkdir ${options?.homePath}/config/node`;
 
         // create folder log
-        await $`mkdir ${homePath}/log`;
+        await $`mkdir ${options?.homePath}/log`;
         await $`sudo chmod 644 /var/log/nginx/.`;
-        await $`sudo ln -s /var/log/nginx/ ${homePath}/log/`;
-        await $`mkdir ${homePath}/log/node`;
+        await $`sudo ln -s /var/log/nginx/ ${options?.homePath}/log/`;
+        await $`mkdir ${options?.homePath}/log/node`;
         await $`sudo chmod 755 /var/log/postgresql`;
         await $`sudo chmod 644 /var/log/postgresql/.`;
-        await $`sudo ln -s /var/log/postgresql/ ${homePath}/log/`;
+        await $`sudo ln -s /var/log/postgresql/ ${options?.homePath}/log/`;
 
         // create folder backup
-        await $`mkdir ${homePath}/backup`;
-        await $`mkdir ${homePath}/backup/postgresql`;
+        await $`mkdir ${options?.homePath}/backup`;
+        await $`mkdir ${options?.homePath}/backup/postgresql`;
 
         // prepare installation
         // - node 20, npm 9
         await $`curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -`;
         // - postgres 15
-        await $`sudo apt -y install wget ca-certificates`;
         await $`wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -`;
         await $`sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" >> /etc/apt/sources.list.d/pgdg.list'`;
         // - postgres 15 extension citus
@@ -472,82 +568,76 @@ PUBLICAPI_IMAGEKIT=`);
         await $`sudo apt -y update`;
 
         // install
-        // - standard
-        await $`sudo apt -y install nano fail2ban`;
         // - nginx 1.18.0
         await $`sudo apt -y install nginx certbot python3-certbot-nginx`;
-        // node 20, npm 9
+        // - node 20, npm 9
         await $`sudo apt-get -y install nodejs`;
         await $`sudo apt -y install build-essential`;
         await $`sudo npm install pm2 -g`;
-        // install postgres 15 & extension
+        // - postgres 15 & extension
         await $`sudo apt -y install postgresql-15`;
         await $`sudo apt -y install postgresql-15-postgis-3 postgresql-15-pgrouting postgresql-15-pgvector postgresql-15-age timescaledb-2-postgresql-15`;
         await $`sudo apt-get -y install postgresql-15-citus-11.3`;
 
         // configure
-        const databaseUrl = '';
         // - nginx
+        // 'nginx.conf'
         fs.writeFileSync('/etc/nginx/conf.d/default.conf', `
 server {
-    root ${homePath}/data/default;
+    root ${options?.homePath}/data/default;
     index index.html;
 
     server_name localhost;
 
-    access_log ${homePath}/log/nginx/default_access.log;
-    error_log ${homePath}/log/nginx/default_error.log;
+    access_log ${options?.homePath}/log/nginx/default_access.log;
+    error_log ${options?.homePath}/log/nginx/default_error.log;
 
     listen 80 default_server;
     listen [::]:80;
 }`);
+        // - node
+        fs.writeFileSync(options?.homePath + '/config/node/ecosystem.json', JSON.stringify({
+            apps: [],
+        }));
+        await $`pm2 start ${options?.homePath}/config/node/ecosystem.json`;
         // - postgres
-        // sudo -u postgres psql
-        // postgres=# \password postgres
-        // postgres=# CREATE ROLE muliawan CREATEDB LOGIN PASSWORD 'm***1***';
-        // postgres=# CREATE DATABASE akira WITH OWNER = muliawan ENCODING = 'UTF8';
-        // postgres=# \q
-
-        // echo "shared_preload_libraries = 'citus'" >> citus/postgresql.conf
-        // in /etc/postgresql/15/main/postgresql.conf, make postgresql can be accessed from everywhere
-        // listen_addresses = '*'
-        // timezone = 'UTC'
-        // in /etc/postgresql/15/main/pg_hba.conf, make postgresql can be accessed from everywhere, add in bottom
-        // host all all 0.0.0.0/0 md5
-
+        await $`psql -d "${options?.databaseRootUrl}" -c "CREATE ROLE ${options?.databaseUsername} CREATEDB LOGIN PASSWORD '${options?.databasePassword}'"`;
+        await $`psql -d "${options?.databaseRootUrl}" -c "CREATE DATABASE ${options?.projectName} WITH OWNER = ${options?.databaseUsername} ENCODING = 'UTF8'"`;
+        await $`psql -d "${options?.databaseRootUrl}" -c "ALTER USER postgres PASSWORD '${options?.databaseInitPassword}'"`;
+        // - postgres: modified config
+        changeConfig('/etc/postgresql/15/main/postgresql.conf', 'listen_addresses', '\'*\'');
+        changeConfig('/etc/postgresql/15/main/postgresql.conf', 'timezone', '\'UTC\'');
+        changeConfig('/etc/postgresql/15/main/postgresql.conf', 'shared_preload_libraries', '\'citus\'');
+        await $`echo "host all all 0.0.0.0/0 md5" >> /etc/postgresql/15/main/pg_hba.conf`;
+        // - postgres: tune configuration
         await $`sudo timescaledb-tune`;
-        await $`psql -d "${databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements CASCADE"`;
-        await $`psql -d "${databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS pgcrypto CASCADE"`;
-        await $`psql -d "${databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS pg_trgm CASCADE"`;
-        await $`psql -d "${databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS ltree CASCADE"`;
-        await $`psql -d "${databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS postgis CASCADE"`;
-        await $`psql -d "${databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS pgrouting CASCADE"`;
-        await $`psql -d "${databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS vector CASCADE"`;
-        await $`psql -d "${databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS age CASCADE"`;
-        await $`psql -d "${databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS citus CASCADE"`;
-        await $`psql -d "${databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE"`;
+        // - postgres: create extension
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements CASCADE"`;
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS pgcrypto CASCADE"`;
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS pg_trgm CASCADE"`;
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS ltree CASCADE"`;
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS postgis CASCADE"`;
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS pgrouting CASCADE"`;
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS vector CASCADE"`;
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS age CASCADE"`;
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS citus CASCADE"`;
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE"`;
 
         // restart
         await $`sudo systemctl restart nginx`;
         await $`sudo systemctl restart postgresql`;
     }
     else if (action == 'server-config') {
-        const homePath = '/home/muliawan';
-        const siteName = 'test';
-        const siteDomain = 'test.muliawanoetama.com';
-        const port = 3000;
-        const developmentPort = 53000;
-
         // add nginx virtual host
         fs.appendFileSync('/etc/nginx/conf.d/akira.conf', `
 
 server {
-    server_name ${siteDomain};
-    root /home/muliawan/data/${siteName};
+    server_name ${options?.siteDomain};
+    root ${options?.homePath}/data/${options?.siteName};
     index index.html;
 
     location /  {
-        proxy_pass http://localhost:3000;
+        proxy_pass http://localhost:${options?.port};
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -556,43 +646,84 @@ server {
         proxy_cache_bypass $http_upgrade;
     }
 
-    access_log ${homePath}/log/nginx/${siteName}_access.log;
-    error_log ${homePath}/log/nginx/${siteName}_error.log;
+    access_log ${options?.homePath}/log/nginx/${options?.siteName}_access.log;
+    error_log ${options?.homePath}/log/nginx/${options?.siteName}_error.log;
+
+    listen 80;
+    listen [::]:80;
+}
+
+server {
+    server_name ${options?.developmentSiteDomain};
+    root /home/muliawan/data/${options?.developmentSiteName};
+    index index.html;
+
+    location /  {
+        proxy_pass http://localhost:${options?.developmentPort};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+    access_log ${options?.homePath}/log/nginx/${options?.developmentSiteName}_access.log;
+    error_log ${options?.homePath}/log/nginx/${options?.developmentSiteName}_error.log;
 
     listen 80;
     listen [::]:80;
 }`);
 
         // add ssl
-        await $`sudo certbot --nginx`;
+        await $`sudo certbot --nginx -d ${options?.siteDomain} -d ${options?.developmentSiteDomain}`;
 
-        // add nodejs configuration
-        const nodeConfig =
-        // module.exports = {
-        //     apps: [
-        //         {
-        //             name: 'test-dev',
-        //             cwd: '/home/muliawan/data/test', // working directory
-        //             script: 'npm run dev',
-        //             args: '', // arguments to pass to the script
-        //             exec_mode: 'fork', // 'fork' (default) / 'cluster'; cluster mode allows networked Node.js applications (http(s)/tcp/udp server) to be scaled across all CPUs available, greatly increases performance and reliability depending on the number of CPUs available
-        //             watch: false, // if true, when a file change in the folder / subfolder, process will reload
-        //             max_memory_restart: '1G', // process will be restarted if it exceeds the amount of memory specified, end with G for GB
-        //             out_file: '/home/muliawan/log/node/test-dev-out.log', // output log file path
-        //             error_file: '/home/muliawan/log/node/test-dev-error.log', // error log file path
-        //             log_date_format: 'YYYY-MM-DDTHH:mm:ss.SSSZ',
-        //             autorestart: true, // if false, process will not restart when crashed or end peacefully
-        //             max_restarts: 10, // number of consecutive unstable restarts (less than 1sec interval ) before process is considered errored and stop being restarted
-        //             restart_delay: 100, // time to wait before restart (in milliseconds)
-        //         },
-        //     ]
-        // };
-        await $`pm2 start ${homePath}/config/node/ecosystem.config.js`;
+        // modified ecosystem.json (node)
+        const ecosystemJson = fs.readJsonSync(options?.homePath + '/config/node/ecosystem.json');
+        fs.writeFileSync(options?.homePath + '/config/node/ecosystem.json', JSON.stringify({
+            apps: [
+                ...ecosystemJson?.apps?.filter(x => ![options?.siteName, options?.developmentSiteName].includes(x.name)),
+                {
+                    name: options?.siteName,
+                    cwd: options?.homePath + '/data/' + options?.siteName,
+                    script: 'npm run start',
+                    args: '-- -p ' + options?.port,
+                    exec_mode: 'cluster',
+                    watch: false,
+                    max_memory_restart: '1G',
+                    out_file: homePath + '/log/node/' + options?.siteName + '-out.log',
+                    error_file: homePath + '/log/node/' + options?.siteName + '-error.log',
+                    log_date_format: 'YYYY-MM-DDTHH:mm:ss.SSSZ',
+                    autorestart: true,
+                    max_restarts: 10,
+                    restart_delay: 100,
+                },
+                {
+                    name: options?.developmentSiteName,
+                    cwd: options?.homePath + '/data/' + options?.siteName,
+                    script: 'npm run dev',
+                    args: '-- -p ' + options?.developmentPort,
+                    exec_mode: 'fork',
+                    watch: false,
+                    max_memory_restart: '2G',
+                    out_file: homePath + '/log/node/' + options?.developmentSiteName + '-out.log',
+                    error_file: homePath + '/log/node/' + options?.developmentSiteName + '-error.log',
+                    log_date_format: 'YYYY-MM-DDTHH:mm:ss.SSSZ',
+                    autorestart: true,
+                    max_restarts: 5,
+                    restart_delay: 500,
+                },
+            ],
+        }));
+        await $`pm2 reload ${options?.homePath}/config/node/ecosystem.json`;
+
+        // restart
+        await $`sudo systemctl restart nginx`;
     }
 
     // delete temporary folder .akira
     if (action == 'install' || action == 'update') {
-        await $`rm -rf ./akira/`;
+        await $`rm -rf ./akira`;
     }
 
     // install npm
