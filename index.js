@@ -1,7 +1,7 @@
 #!/usr/bin/env zx
 import 'dotenv/config';
 import 'zx/globals';
-import { kebabCase } from 'lodash';
+import _ from 'lodash';
 import * as semver from 'semver';
 import { select, input, confirm } from '@inquirer/prompts';
 $.verbose = false;
@@ -9,17 +9,10 @@ $.verbose = false;
 // run this sequentially: test, server-install, install, commit-dna, server-config; then commit-dna, update, ...
 // run 'commit-dna' when there is change in: ./public/logo.png, ./public/logoWithText.png, ./dna/structure.js, or when just after install
 // no need to run 'commit-dna' when there is change in: ./dna/theme.js, ./dna/*.theme.template.js
-// file generate automatically by 'commit-dna'
+// file generate automatically by 'commit-dna':
 // - ./db/*.*
-// - ./dna/defaultSession.ts
-// - ./dna/localeFormat.ts
-// - ./dna/faviconData.json
-// - ./dna/faviconDescription.json
-// - ./public/*.png except ./public/logo.png and ./public/logoWithText.png
-// - ./public/*.svg
-// - ./public/favicon.ico
-// - ./public/browserconfig.xml
-// - ./public/site.webmanifest
+// - ./dna/localeFormat.ts, defaultSession.ts, faviconData.json, faviconDescription.json
+// - ./public/*.png, *.svg, favicon.ico, browserconfig.xml, site.webmanifest except logo.png, logoWithText.png
 
 // check again:
 // - ./public/robots.txt
@@ -38,11 +31,79 @@ $.verbose = false;
 //     url: process.env.DATABASE_URL,
 // },
 // });
-// add to package.json:
-// "script" : {
-// "generate-db": "drizzle-kit generate",
-// "migrate-db": "drizzle-kit migrate"
-// }
+
+// requirementsConfig = [{checkScript, requirementVersion, errorMessage }, ...]
+async function checkRequirement(requirementsConfig) {
+    for (let i in requirementsConfig) {
+        const x = requirementsConfig[i];
+        let currentVersionT;
+        if (x.checkScript=='ubuntu') {
+            currentVersionT = await $`lsb_release -r | awk '{print $2}'`;
+        }
+        else if (x.checkScript=='node') {
+            currentVersionT = await $`node -v`;
+        }
+        else if (x.checkScript=='npm') {
+            currentVersionT = await $`npm -v`;
+        }
+        let currentVersion = currentVersionT?.stdout?.trim();
+        if (x.checkScript=='ubuntu') {
+            currentVersion = currentVersion?.split('.')?.[0] + '.0.0';
+        }
+        if (!semver.satisfies(currentVersion, x?.requirementVersion)) {
+            throw Error(x?.errorMessage);
+        }
+    }
+}
+
+// optionsConfig = [{ key, optionsValue, defaultValue, questionMessage, errorMessageWhenUndefined }, ...]
+async function getOptionsValue(optionsConfig) {
+    let r = {};
+    for (let i in optionsConfig) {
+        const x = optionsConfig[i];
+        const key = x?.key;
+        const keyArgument = _.kebabCase(key);
+        if (argv?.[keyArgument]) {
+            r = {
+                ...r,
+                [key]: argv?.[keyArgument]
+            };
+        }
+        else {
+            // ask question
+            let answer;
+            while (!answer) {
+                if (x?.optionsValue?.length > 0) {
+                    answer = await select({
+                        message: x?.questionMessage,
+                        choices: x?.optionsValue?.map(y => ({
+                            value: y?.value,
+                            name: y?.label,
+                        })),
+                    });
+                }
+                else {
+                    answer = await input({
+                        message: x?.questionMessage,
+                    });
+                }
+                if (answer === undefined) {
+                    if (defaultValue === undefined) {
+                        console.log(x?.errorMessageWhenUndefined);
+                    }
+                    else {
+                        answer = defaultValue;
+                    }
+                }
+            }
+            r = {
+                ...r,
+                [key]: answer ?? null,
+            }
+        }
+    }
+    return r;
+}
 
 function changeConfig(fileConfigPath, configKey, configValue) {
     let fileContent = fs.readFileSync(fileConfigPath, 'utf8');
@@ -59,56 +120,6 @@ function changeConfig(fileConfigPath, configKey, configValue) {
     fs.writeFileSync(fileConfigPath, fileContent);
 }
 
-// optionsConfig = [{ key, optionsValue, defaultValue, questionMessage, errorMessageWhenUndefined }, ...]
-async function getOptionsValue (optionsConfig) {
-    let r = {};
-    for (let i in optionsConfig) {
-        const x = optionsConfig[i];
-        const key = x?.key;
-        const keyArgument = kebabCase(key);
-        if (argv?.[keyArgument]) {
-            r = {
-                ...r,
-                [key]: argv?.[keyArgument]
-            };
-        }
-        else {
-            // ask question
-            let answer;
-            if (x?.optionsValue?.length>0) {
-                answer = await select({
-                    message: x?.questionMessage,
-                    choices: x?.optionsValue?.map(y => ({
-                        value: y?.value,
-                        name: y?.label,
-                    })),
-                });
-            }
-            else {
-                answer = await input({
-                    message: x?.questionMessage,
-                });
-            }
-            if (answer===undefined) {
-                if (defaultValue===undefined) {
-                    throw Error(x?.errorMessageWhenUndefined);
-                }
-                else {
-                    answer = defaultValue;
-                }
-            }
-            r = {
-                ...r,
-                [key]: answer ?? null,
-            }
-        }
-    }
-    return r;
-}
-
-console.log('argv', argv);
-
-const siteUrl = process?.env?.SITE_URL;
 const sourceRepository = 'akira';
 const templateList = {
     'person-profile': 'Person Profile',
@@ -207,49 +218,10 @@ try {
     })?.flat();
 
     // get 'action' argument
-    const [action, testA, testB] = argv._;
+    const [notUsed, action, testA, testB] = argv._;
     if (!['test', 'install', 'update', 'commit-dna', 'server-install', 'server-config'].includes(action)) {
         throw new Error('Please add valid action (install / update / commit-dna / test / server-install / server-config), example: "npx akira-cli update"');
     }
-
-    // console.log('files', files);
-    // console.log('filesCreateOnly', filesCreateOnly);
-    // throw new Error('exit');
-
-    // get options
-    const options = process.execArgv?.reduce((xAcc, x) => {
-        if (x?.startsWith('--github-pa-token=') && ['install', 'update'].includes(action)) {
-            const [notUsed, githubPersonalAccessToken] = x?.split('=');
-            return {
-                ...xAcc,
-                githubPersonalAccessToken: githubPersonalAccessToken,
-            };
-        }
-        else if (x?.startsWith('--project-name=') && ['install'].includes(action)) {
-            const [notUsed, projectName] = x?.split('=');
-            return {
-                ...xAcc,
-                projectName: projectName,
-            };
-        }
-        else if (x?.startsWith('--project-author=') && ['install'].includes(action)) {
-            const [notUsed, projectAuthor] = x?.split('=');
-            return {
-                ...xAcc,
-                projectAuthor: projectAuthor,
-            };
-        }
-        else if (x?.startsWith('--template=') && ['install'].includes(action)) {
-            const [notUsed, template] = x?.split('=');
-            return {
-                ...xAcc,
-                template: template,
-            };
-        }
-        else {
-            return xAcc;
-        }
-    }, {});
 
     // make sure run as sudo
     if (action == 'server-install' || action == 'server-config') {
@@ -259,66 +231,57 @@ try {
         }
     }
 
-    // check os requirement
-    if (action == 'install') {
-        // at this state, server must be installed all requirement
-        // check node and npm version
-        const requirementNode = '>=20.0.0';
-        const requirementNpm = '>=10.0.0';
-        const currentNodeT = await $`node -v`;
-        const currentNpmT = await $`npm -v`;
-        const currentNode = currentNodeT?.stdout?.trim();
-        const currentNpm = currentNpmT?.stdout?.trim();
-        let requirementNotMeetError = '';
-        if (!semver.satisfies(currentNode, requirementNode)) {
-            requirementNotMeetError = requirementNotMeetError + 'Node version must be ' + requirementNode + '. ';
-        }
-        if (!semver.satisfies(currentNpm, requirementNpm)) {
-            requirementNotMeetError = requirementNotMeetError + 'NPM version must be ' + requirementNode + '.';
-        }
-        if (requirementNotMeetError) {
-            throw new Error(requirementNotMeetError);
-        }
-    }
-
-    // make sure there is GitHub PA Token for repository 'akira'
+    // check requirement
     if (action == 'install' || action == 'update') {
-        if (!options?.githubPersonalAccessToken) {
-            options.githubPersonalAccessToken = await input({
-                message: 'Github PA Token for repository "muliawanoetama/' + sourceRepository + '.git" ?',
-                default: '',
-            });
-        }
-        if (!options?.githubPersonalAccessToken) {
-            throw new Error('You must provide Github PA Token for repository "muliawanoetama/' + sourceRepository + '.git".');
-        }
+        await checkRequirement([
+            { checkScript: 'node', requirementVersion: '>=20.0.0', errorMessage: 'Node version must be >=20.0.0' },
+            { checkScript: 'npm', requirementVersion: '>=10.0.0', errorMessage: 'npm version must be >=10.0.0' },
+        ]);
+    }
+    else if (action == 'server-install') {
+        // await checkRequirement([
+        //     { checkScript: 'ubuntu', requirementVersion: '>=20.0.0 <21.0.0', errorMessage: 'Ubuntu version must be version 20' },
+        // ]);
     }
 
-    // make sure all required options filled
+    // get options
+    let options = {};
     if (action == 'install') {
-        if (!options?.projectName) {
-            options.projectName = await input({
-                message: 'Name of your project (use lowercase) ?',
-                default: '',
-            }) ?? 'no-project-name';
-        }
-        if (!options?.projectAuthor) {
-            options.projectAuthor = await input({
-                message: 'What is your name ?',
-                default: '',
-            }) ?? '';
-        }
-        if (!options?.template) {
-            options.template = await select({
-                message: 'Choose template for this project:',
-                choices: Object.entries(templateList)?.map(([k, v]) => ({
+        options = await getOptionsValue([
+            {
+                key: 'githubPaToken',
+                questionMessage: 'Github PA Token for repository "muliawanoetama/' + sourceRepository + '.git":',
+                errorMessageWhenUndefined: 'You must provide Github PA Token for repository "muliawanoetama/' + sourceRepository + '.git".',
+            },
+            {
+                key: 'projectName',
+                defaultValue: 'no-project-name',
+                questionMessage: 'Name of your project (use lowercase) (default=no-project-name):',
+            },
+            {
+                key: 'projectAuthor',
+                defaultValue: '',
+                questionMessage: 'What is your name (default=):',
+            },
+            {
+                key: 'template',
+                optionsValue: Object.entries(templateList)?.map(([k, v]) => ({
                     value: k,
-                    name: v,
+                    label: v,
                 })),
-            }) ?? 'custom';
-        }
+                defaultValue: 'custom',
+                questionMessage: 'Choose template for this project:',
+            },
+        ]);
     }
     else if (action == 'update') {
+        options = await getOptionsValue([
+            {
+                key: 'githubPaToken',
+                questionMessage: 'Github PA Token for repository "muliawanoetama/' + sourceRepository + '.git":',
+                errorMessageWhenUndefined: 'You must provide Github PA Token for repository "muliawanoetama/' + sourceRepository + '.git".',
+            },
+        ]);
         // check ./akira.json
         if (!fs.existsSync('./akira.json')) {
             const isNewProject = await confirm({
@@ -339,7 +302,96 @@ try {
             options.projectAuthor = akiraConfig?.projectAuthor ? akiraConfig?.projectAuthor : '';
             options.template = akiraConfig?.template ? akiraConfig?.template : 'custom';
         }
-        // get overwrite confirmation
+    }
+    else if (action == 'commit-dna') {
+        options.siteUrl = process?.env?.SITE_URL;
+    }
+    else if (action == 'server-install') {
+        options = await getOptionsValue([
+            {
+                key: 'homePath',
+                questionMessage: 'Home path (example: /home/administrator):',
+                errorMessageWhenUndefined: 'You must provide home path.',
+            },
+            {
+                key: 'databaseHost',
+                defaultValue: 'localhost',
+                questionMessage: 'Postgres host address (localhost, or IP address) (default=localhost):',
+            },
+            {
+                key: 'databasePort',
+                defaultValue: '5432',
+                questionMessage: 'Postgres port (default=5432):',
+            },
+            {
+                key: 'databaseRootPassword',
+                questionMessage: 'Postgres password for root / postgres:',
+                errorMessageWhenUndefined: 'You must provide root password.',
+            },
+            {
+                key: 'databaseUsername',
+                questionMessage: 'Postgres new username:',
+                errorMessageWhenUndefined: 'You must provide new username.',
+            },
+            {
+                key: 'databasePassword',
+                questionMessage: 'Postgres password for new username:',
+                errorMessageWhenUndefined: 'You must provide password for new username.',
+            },
+        ]);
+        options.databaseRootUrl = 'postgres://postgres:@' + options?.databaseHost + ':' + options?.databasePort + '/postgres';
+    }
+    else if (action == 'server-config') {
+        options = await getOptionsValue([
+            {
+                key: 'homePath',
+                questionMessage: 'Home path (example: /home/administrator):',
+                errorMessageWhenUndefined: 'You must provide home path.',
+            },
+            {
+                key: 'projectName',
+                questionMessage: 'Project Name:',
+                errorMessageWhenUndefined: 'You must provide project name.',
+            },
+            {
+                key: 'projectDomain',
+                questionMessage: 'Project Domain (example: sub.domain.com):',
+                errorMessageWhenUndefined: 'You must provide project domain.',
+            },
+            {
+                key: 'port',
+                questionMessage: 'Application port (must be different from other app ports):',
+                errorMessageWhenUndefined: 'You must provide app port.',
+            },
+            {
+                key: 'databaseHost',
+                defaultValue: 'localhost',
+                questionMessage: 'Postgres host address (localhost, or IP address) (default=localhost):',
+            },
+            {
+                key: 'databasePort',
+                defaultValue: '5432',
+                questionMessage: 'Postgres port (default=5432):',
+            },
+            {
+                key: 'databaseUsername',
+                questionMessage: 'Postgres username:',
+                errorMessageWhenUndefined: 'You must provide username.',
+            },
+            {
+                key: 'databasePassword',
+                questionMessage: 'Postgres password:',
+                errorMessageWhenUndefined: 'You must provide password.',
+            },
+        ]);
+        options.developmentProjectName = options?.projectName + '-dev';
+        options.developmentProjectDomain = options?.projectDomain?.split('.')?.map((x, xIndex) => xIndex === 0 ? x + '-dev' : x)?.join('.');
+        options.developmentPort = 53000 ?? 50000 + options?.port;
+        options.databaseUrl = 'postgres://' + options?.databaseUsername + ':' + options?.databasePassword + '@' + options?.databaseHost + ':' + options?.databasePort + '/' + options?.projectName;
+    }
+
+    // get overwrite confirmation
+    if (action == 'update') {
         const overwriteConfirmation = await confirm({
             message: 'Please make sure you have added first line prefix "// modified" to each file that you change manually. This will prevent those files from being overwritten. Can you confirm this?',
             default: false,
@@ -348,29 +400,10 @@ try {
             throw new Error('You must add first line prefix "// modified" to each file that you change manually.');
         }
     }
-    else if (action == 'commit-dna') {
-        options.siteUrl = '';
-    }
-    else if (action == 'server-install') {
-        options.homePath = '';
-        options.projectName = '';
-        options.databaseHost = 'localhost';
-        options.databasePort = '5432';
-        options.databaseRootPassword = 'rpassword';
-        options.databaseUsername = 'username';
-        options.databasePassword = 'password';
-        options.databaseRootUrl = 'postgres://postgres:@' + options?.databaseHost + ':' + options?.databasePort + '/postgres';
-        options.databaseUrl = 'postgres://' + options?.databaseUsername + ':' + options?.databasePassword + '@' + options?.databaseHost + ':' + options?.databasePort + '/' + options?.projectName;
-    }
-    else if (action == 'server-config') {
-        options.homePath = '/home/muliawan' ?? '/home/user';
-        options.siteName = 'test';
-        options.siteDomain = 'test.muliawanoetama.com';
-        options.port = 3000;
-        options.developmentSiteName = options?.siteName + '-dev';
-        options.developmentSiteDomain = options?.siteDomain?.split('.')?.map((x, xIndex) => xIndex === 0 ? x + '-dev' : x)?.join('.');
-        options.developmentPort = 53000 ?? 50000 + options?.port;
-    }
+
+    console.log('action', action);
+    console.log('options', options);
+    throw new Error('exit');
 
     // copy muliawanoetama/akira.git to temporary folder ./.akira/
     if (action == 'install' || action == 'update') {
@@ -413,7 +446,7 @@ try {
                 overwrite: true,
                 preserveTimestamps: true,
             });
-            console.log('- copy overwrite file', src, dest);
+            console.log('- copy file', src, dest);
         });
 
         // modified package.json
@@ -457,6 +490,7 @@ PRIVATEAPI_DIGITALOCEAN=
 PRIVATEAPI_OPENEXCHANGERATE=
 PRIVATEAPI_IMAGEKIT=
 PUBLICAPI_IMAGEKIT=`);
+        console.log('Please modify the .env file after this script has finished executing.');
 
         // create akira.json
         fs.writeFileSync('./akira.json', JSON.stringify({
@@ -527,8 +561,6 @@ PUBLICAPI_IMAGEKIT=`);
         await $`npm run migrate-db`;
     }
     else if (action == 'server-install') {
-        // requirement Ubuntu 20.04
-
         // install pre
         await $`sudo apt -y install nano curl wget ca-certificates fail2ban`;
 
@@ -574,6 +606,7 @@ PUBLICAPI_IMAGEKIT=`);
         await $`sudo apt-get -y install nodejs`;
         await $`sudo apt -y install build-essential`;
         await $`sudo npm install pm2 -g`;
+        await $`sudo npm install zx -g`;
         // - postgres 15 & extension
         await $`sudo apt -y install postgresql-15`;
         await $`sudo apt -y install postgresql-15-postgis-3 postgresql-15-pgrouting postgresql-15-pgvector postgresql-15-age timescaledb-2-postgresql-15`;
@@ -581,7 +614,54 @@ PUBLICAPI_IMAGEKIT=`);
 
         // configure
         // - nginx
-        // 'nginx.conf'
+        fs.writeFileSync('/etc/nginx/nginx.conf', `
+user www-data;
+worker_processes auto;
+pid /run/nginx.pid;
+include /etc/nginx/modules-enabled/*.conf;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    # Basic
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 45;
+    types_hash_max_size 2048;
+    server_tokens off;
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    # Buffer Size
+    client_body_buffer_size 10K;
+    client_max_body_size 8m;
+    large_client_header_buffers 4 32k;
+    fastcgi_buffers 16 32k;
+    fastcgi_buffer_size 64k;
+    fastcgi_busy_buffers_size 64k;
+
+    # Timeout
+    client_header_timeout 12;
+    client_body_timeout 12;
+    send_timeout 10;
+
+    # Security
+    # ssl_protocols TLSv1.2 TLSv1.3;
+
+    # Compression
+    gzip on;
+    gzip_min_length 10240;
+    gzip_disable "msie6";
+    gzip_comp_level 2;
+    gzip_types application/x-javascript text/css application/javascript text/javascript text/plain text/xml application/json application/vnd.ms-fontobject application/x-font-opentype application/x-font-truetype application/x-font-ttf application/xml font/eot font/opentype font/otf image/svg+xml image/vnd.microsoft.icon;
+    # gzip_vary on;
+
+    # Virtual Host
+    include /etc/nginx/conf.d/*.conf;
+}`);
         fs.writeFileSync('/etc/nginx/conf.d/default.conf', `
 server {
     root ${options?.homePath}/data/default;
@@ -602,26 +682,13 @@ server {
         await $`pm2 start ${options?.homePath}/config/node/ecosystem.json`;
         // - postgres
         await $`psql -d "${options?.databaseRootUrl}" -c "CREATE ROLE ${options?.databaseUsername} CREATEDB LOGIN PASSWORD '${options?.databasePassword}'"`;
-        await $`psql -d "${options?.databaseRootUrl}" -c "CREATE DATABASE ${options?.projectName} WITH OWNER = ${options?.databaseUsername} ENCODING = 'UTF8'"`;
-        await $`psql -d "${options?.databaseRootUrl}" -c "ALTER USER postgres PASSWORD '${options?.databaseInitPassword}'"`;
+        await $`psql -d "${options?.databaseRootUrl}" -c "ALTER USER postgres PASSWORD '${options?.databaseRootPassword}'"`;
         // - postgres: modified config
         changeConfig('/etc/postgresql/15/main/postgresql.conf', 'listen_addresses', '\'*\'');
         changeConfig('/etc/postgresql/15/main/postgresql.conf', 'timezone', '\'UTC\'');
         changeConfig('/etc/postgresql/15/main/postgresql.conf', 'shared_preload_libraries', '\'citus\'');
         await $`echo "host all all 0.0.0.0/0 md5" >> /etc/postgresql/15/main/pg_hba.conf`;
-        // - postgres: tune configuration
         await $`sudo timescaledb-tune`;
-        // - postgres: create extension
-        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements CASCADE"`;
-        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS pgcrypto CASCADE"`;
-        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS pg_trgm CASCADE"`;
-        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS ltree CASCADE"`;
-        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS postgis CASCADE"`;
-        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS pgrouting CASCADE"`;
-        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS vector CASCADE"`;
-        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS age CASCADE"`;
-        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS citus CASCADE"`;
-        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE"`;
 
         // restart
         await $`sudo systemctl restart nginx`;
@@ -632,8 +699,8 @@ server {
         fs.appendFileSync('/etc/nginx/conf.d/akira.conf', `
 
 server {
-    server_name ${options?.siteDomain};
-    root ${options?.homePath}/data/${options?.siteName};
+    server_name ${options?.projectDomain};
+    root ${options?.homePath}/data/${options?.projectName};
     index index.html;
 
     location /  {
@@ -646,16 +713,16 @@ server {
         proxy_cache_bypass $http_upgrade;
     }
 
-    access_log ${options?.homePath}/log/nginx/${options?.siteName}_access.log;
-    error_log ${options?.homePath}/log/nginx/${options?.siteName}_error.log;
+    access_log ${options?.homePath}/log/nginx/${options?.projectName}_access.log;
+    error_log ${options?.homePath}/log/nginx/${options?.projectName}_error.log;
 
     listen 80;
     listen [::]:80;
 }
 
 server {
-    server_name ${options?.developmentSiteDomain};
-    root /home/muliawan/data/${options?.developmentSiteName};
+    server_name ${options?.developmentProjectDomain};
+    root /home/muliawan/data/${options?.developmentProjectName};
     index index.html;
 
     location /  {
@@ -668,46 +735,46 @@ server {
         proxy_cache_bypass $http_upgrade;
     }
 
-    access_log ${options?.homePath}/log/nginx/${options?.developmentSiteName}_access.log;
-    error_log ${options?.homePath}/log/nginx/${options?.developmentSiteName}_error.log;
+    access_log ${options?.homePath}/log/nginx/${options?.developmentProjectName}_access.log;
+    error_log ${options?.homePath}/log/nginx/${options?.developmentProjectName}_error.log;
 
     listen 80;
     listen [::]:80;
 }`);
 
         // add ssl
-        await $`sudo certbot --nginx -d ${options?.siteDomain} -d ${options?.developmentSiteDomain}`;
+        await $`sudo certbot --nginx -d ${options?.projectDomain} -d ${options?.developmentProjectDomain}`;
 
         // modified ecosystem.json (node)
         const ecosystemJson = fs.readJsonSync(options?.homePath + '/config/node/ecosystem.json');
         fs.writeFileSync(options?.homePath + '/config/node/ecosystem.json', JSON.stringify({
             apps: [
-                ...ecosystemJson?.apps?.filter(x => ![options?.siteName, options?.developmentSiteName].includes(x.name)),
+                ...ecosystemJson?.apps?.filter(x => ![options?.projectName, options?.developmentProjectName].includes(x.name)),
                 {
-                    name: options?.siteName,
-                    cwd: options?.homePath + '/data/' + options?.siteName,
+                    name: options?.projectName,
+                    cwd: options?.homePath + '/data/' + options?.projectName,
                     script: 'npm run start',
                     args: '-- -p ' + options?.port,
                     exec_mode: 'cluster',
                     watch: false,
                     max_memory_restart: '1G',
-                    out_file: homePath + '/log/node/' + options?.siteName + '-out.log',
-                    error_file: homePath + '/log/node/' + options?.siteName + '-error.log',
+                    out_file: homePath + '/log/node/' + options?.projectName + '-out.log',
+                    error_file: homePath + '/log/node/' + options?.projectName + '-error.log',
                     log_date_format: 'YYYY-MM-DDTHH:mm:ss.SSSZ',
                     autorestart: true,
                     max_restarts: 10,
                     restart_delay: 100,
                 },
                 {
-                    name: options?.developmentSiteName,
-                    cwd: options?.homePath + '/data/' + options?.siteName,
+                    name: options?.developmentProjectName,
+                    cwd: options?.homePath + '/data/' + options?.projectName,
                     script: 'npm run dev',
                     args: '-- -p ' + options?.developmentPort,
                     exec_mode: 'fork',
                     watch: false,
                     max_memory_restart: '2G',
-                    out_file: homePath + '/log/node/' + options?.developmentSiteName + '-out.log',
-                    error_file: homePath + '/log/node/' + options?.developmentSiteName + '-error.log',
+                    out_file: homePath + '/log/node/' + options?.developmentProjectName + '-out.log',
+                    error_file: homePath + '/log/node/' + options?.developmentProjectName + '-error.log',
                     log_date_format: 'YYYY-MM-DDTHH:mm:ss.SSSZ',
                     autorestart: true,
                     max_restarts: 5,
@@ -716,6 +783,19 @@ server {
             ],
         }));
         await $`pm2 reload ${options?.homePath}/config/node/ecosystem.json`;
+
+        // add postgres database + extension
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE DATABASE ${options?.projectName} WITH OWNER = ${options?.databaseUsername} ENCODING = 'UTF8'"`;
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements CASCADE"`;
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS pgcrypto CASCADE"`;
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS pg_trgm CASCADE"`;
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS ltree CASCADE"`;
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS postgis CASCADE"`;
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS pgrouting CASCADE"`;
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS vector CASCADE"`;
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS age CASCADE"`;
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS citus CASCADE"`;
+        await $`psql -d "${options?.databaseUrl}" -c "CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE"`;
 
         // restart
         await $`sudo systemctl restart nginx`;
